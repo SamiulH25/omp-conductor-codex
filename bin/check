@@ -1,0 +1,149 @@
+#!/usr/bin/env node
+// `check`: runs a project toolbox check for an omp-conductor worker.
+// The plugin writes the worker's toolbox to $PI_CHECKS_FILE and puts this script on the worker's PATH.
+//   check            list the checks this worker has
+//   check <name> [args]  run one; args go where its command has {args}, else at the end
+//   check all            run every required check
+// A serial check holds a lock shared by every worker of the project, so two workers never run a tool that
+// cannot run twice (a Unity editor, a Gradle daemon) at once; the second one waits. The full output goes to a
+// log in $TMPDIR; what is printed is the verdict, the failures and the log tail, so it stays small.
+// Every run is appended to $TMPDIR/checks.jsonl, which the supervisor reads.
+import { spawnSync } from 'node:child_process'
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync } from 'node:fs'
+import { dirname } from 'node:path'
+
+const file = process.env.PI_CHECKS_FILE
+const tmp = process.env.TMPDIR || '/tmp'
+const OUT_CHARS = 6000
+const HIGHLIGHT = /error|fail|exception|cannot|could not|not found|denied|lock|timed? ?out|abort/i
+
+let box = { cwd: process.cwd(), checks: {} }
+try {
+  if (file) box = JSON.parse(readFileSync(file, 'utf8'))
+} catch {
+  // no toolbox: listed as empty below
+}
+const names = Object.keys(box.checks)
+const arg = process.argv[2]
+
+if (!arg || arg === '-h' || arg === '--help' || arg === 'list') {
+  if (!names.length) {
+    console.log('No toolbox checks are set for this project. Run only the checks your task names.')
+    process.exit(0)
+  }
+  for (const n of names) {
+    const c = box.checks[n]
+    console.log(`${n}${c.required ? ' (required)' : ''}: ${c.purpose}\n    runs: ${c.command}`)
+  }
+  process.exit(0)
+}
+
+const expand = s => (s ? s.replace(/\$\{?TMPDIR\}?/g, tmp) : s)
+const run = (name, extraArgs = []) => {
+  const c = box.checks[name]
+  if (!c) {
+    console.log(`check: unknown check "${name}". Available: ${names.join(', ') || 'none'}`)
+    return 2
+  }
+  const log = `${tmp}/check-${name}.log`
+  const report = expand(c.report)
+  const toolLog = expand(c.log)
+  for (const p of [report, toolLog]) if (p) rmSync(p, { force: true })
+  const secs = c.timeoutSec || 600
+  // Extra arguments (`check unity-editmode --filter X`) go where the command has {args}, else at its end.
+  const q = s => `'${s.replace(/'/g, `'\\''`)}'`
+  const extra = (extraArgs[0] === '--' ? extraArgs.slice(1) : extraArgs).map(q).join(' ')
+  const command = c.command.includes('{args}') ? c.command.replace('{args}', extra) : extra ? `${c.command} ${extra}` : c.command
+  // timeout inside flock: the wait for the lock does not eat into the check's own time limit
+  const inner = ['timeout', '-k', '20', String(secs), 'bash', '-c', command]
+  if (c.serial && c.lock) mkdirSync(dirname(c.lock), { recursive: true })
+  const argv = c.serial && c.lock ? ['flock', c.lock, ...inner] : inner
+  console.log(`check ${name}: running \`${command.replace(/ {2,}/g, ' ')}\` in ${box.cwd}${c.serial ? ' (one at a time across workers; may wait for another worker first)' : ''}`)
+  const t0 = Date.now()
+  let exit
+  for (;;) {
+    const fd = openSync(log, 'w')
+    const r = spawnSync(argv[0], argv.slice(1), { cwd: box.cwd, stdio: ['ignore', fd, fd], env: process.env })
+    closeSync(fd)
+    exit = r.status ?? (r.signal ? 128 : 1)
+    // retryIf: the tool is held by another process for a while (the supervisor's own test run). When the regex
+    // captures a PID, wait only while that process is a batch run: an app the user keeps open never lets go.
+    const held = exit !== 0 && c.retryIf ? new RegExp(c.retryIf).exec(readFileSync(log, 'utf8')) : null
+    if (!held || Date.now() - t0 > secs * 1000) break
+    let cmdline = ''
+    try {
+      cmdline = held[1] ? readFileSync(`/proc/${held[1]}/cmdline`, 'utf8') : 'batchmode'
+    } catch {
+      // the holder is already gone: retry at once
+    }
+    if (cmdline && !/batchmode/i.test(cmdline)) break
+    console.log(`check ${name}: held by another run${held[1] ? ` (PID ${held[1]})` : ''}; waiting 15 s and retrying`)
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 15_000)
+  }
+  const ok = exit === 0
+  const secsTaken = Math.round((Date.now() - t0) / 1000)
+
+  const out = []
+  out.push(`check ${name}: ${ok ? 'PASS' : exit === 124 ? `TIMED OUT after ${secs}s` : `FAIL (exit ${exit})`} in ${secsTaken}s. Full log: ${log}`)
+  const failures = report && existsSync(report) ? parseReport(readFileSync(report, 'utf8')) : undefined
+  if (failures) out.push(failures.total != null ? `tests: ${failures.total} run, ${failures.failed.length} failed` : '', ...failures.failed.slice(0, 15))
+  else if (report && !ok) out.push(`(no test report at ${report}: the run ended before tests ran, e.g. a compile error, a lock or a crash)`)
+  const text = readFileSync(log, 'utf8') + (toolLog && existsSync(toolLog) ? `\n${readFileSync(toolLog, 'utf8')}` : '')
+  const lines = text.split('\n')
+  if (!ok) {
+    const re = c.highlight ? new RegExp(c.highlight, 'i') : HIGHLIGHT
+    const seen = new Set()
+    const hits = lines.map(l => l.trim()).filter(l => l && re.test(l) && !seen.has(l) && seen.add(l))
+    if (hits.length) out.push('--- matching lines ---', ...hits.slice(0, 40))
+    out.push('--- log tail ---', ...readFileSync(log, 'utf8').trimEnd().split('\n').slice(-25))
+  }
+  let s = out.filter(x => x !== '').join('\n')
+  if (s.length > OUT_CHARS) s = `${s.slice(0, OUT_CHARS)}\n… (cut; read ${log} for the rest)`
+  console.log(s)
+  try {
+    appendFileSync(`${tmp}/checks.jsonl`, `${JSON.stringify({ name, ok, exit, secs: secsTaken, at: Date.now() })}\n`)
+  } catch {
+    // the record is best effort
+  }
+  return ok ? 0 : exit || 1
+}
+
+// NUnit 3 (Unity) or JUnit XML: failed test names with the first line of their message.
+function parseReport(xml) {
+  const failed = []
+  let total
+  const nunit = /<test-run[^>]*\btotal="(\d+)"/.exec(xml)
+  if (nunit) {
+    total = Number(nunit[1])
+    for (const m of xml.matchAll(/<test-case\b([^>]*)>([\s\S]*?)<\/test-case>/g)) {
+      if (!/\bresult="Failed"/.test(m[1])) continue
+      const name = /\bfullname="([^"]*)"/.exec(m[1])?.[1] ?? /\bname="([^"]*)"/.exec(m[1])?.[1]
+      const msg = /<message>\s*(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?\s*<\/message>/.exec(m[2])?.[1]
+      failed.push(`FAILED ${name}: ${(msg ?? '').trim().split('\n')[0].slice(0, 300)}`)
+    }
+    return { total, failed }
+  }
+  if (/<testsuite/.test(xml)) {
+    total = [...xml.matchAll(/<testsuite\b[^>]*\btests="(\d+)"/g)].reduce((n, m) => n + Number(m[1]), 0) || undefined
+    for (const m of xml.matchAll(/<testcase\b([^>]*)>([\s\S]*?)<\/testcase>/g)) {
+      const f = /<(failure|error)\b([^>]*)>/.exec(m[2])
+      if (!f) continue
+      const name = `${/\bclassname="([^"]*)"/.exec(m[1])?.[1] ?? ''}.${/\bname="([^"]*)"/.exec(m[1])?.[1] ?? ''}`
+      failed.push(`FAILED ${name}: ${(/\bmessage="([^"]*)"/.exec(f[2])?.[1] ?? '').slice(0, 300)}`)
+    }
+    return { total, failed }
+  }
+  return undefined
+}
+
+if (arg === 'all') {
+  const req = names.filter(n => box.checks[n].required)
+  if (!req.length) {
+    console.log('No required checks.')
+    process.exit(0)
+  }
+  let worst = 0
+  for (const n of req) worst = run(n) || worst
+  process.exit(worst)
+}
+process.exit(run(arg, process.argv.slice(3)))

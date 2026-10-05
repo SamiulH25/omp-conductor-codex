@@ -1,0 +1,31 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "omp-conductor-codex",
+  "version": "1.0.0",
+  "description": "Orchestrate persistent Pi workers from Codex with isolated worktrees, checks, diffs and reviewed merges.",
+  "author": {
+    "name": "bob2142"
+  },
+  "license": "MIT",
+  "repository": "https://github.com/SamiulH25/omp-conductor-codex",
+  "keywords": [
+    "pi",
+    "codex",
+    "orchestration",
+    "worktrees"
+  ],
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "Pi Conductor",
+        "shortDescription": "Persistent Pi workers for Codex",
+        "category": "Productivity",
+        "capabilities": [
+          "Read",
+          "Write"
+        ]
+      }
+    }
+  },
+  "homepage": "https://github.com/SamiulH25/omp-conductor-codex"
+}

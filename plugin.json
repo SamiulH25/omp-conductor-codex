@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "omp-conductor-codex",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Orchestrate persistent Pi workers from Codex with isolated worktrees, checks, diffs and reviewed merges.",
   "author": {
     "name": "bob2142"

@@ -13,7 +13,7 @@ createInterface({ input: process.stdin }).on('line', line => {
   if (cmd.type === 'get_state') emit({ type: 'response', command: 'get_state', success: true, data: { sessionId: saved } })
   if (cmd.type !== 'prompt') return
   if (cmd.message.startsWith('CRASH')) process.exit(3)
-  if (cmd.message.startsWith('HANG')) return
+  if (cmd.message.startsWith('HANG')) { emit({ type: 'tool_execution_start', toolCallId: 'hang', toolName: 'read', args: { path: 'base.txt' } }); return }
   const write = /^WRITE (\S+) (.*)/.exec(cmd.message)
   if (write) {
     writeFileSync(write[1], write[2] + '\n')

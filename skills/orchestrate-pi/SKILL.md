@@ -32,4 +32,4 @@ Use the `omp-conductor` MCP server's `pi_*` tools. Depending on the host, tool n
 - Non-git tasks edit in place. Snapshot diffs cover edits made through file tools; shell edits have no guaranteed baseline. Prefer worktrees for editing tasks.
 - Workers run with the local user's permissions. Worktrees and the path guard reduce accidental cross-worker edits; they are not OS sandboxes. Respect the session's filesystem and execution permissions.
 - If setup fails, report the returned setup steps. Do not read or expose API keys. State is under `~/.codex/plugin-data/omp-conductor-codex` or `OMP_CONDUCTOR_DATA_DIR`. A stable `CODEX_THREAD_ID` restores records across MCP restarts; without one, each server starts an isolated session.
-- This plugin reports completion through tool results. It has no animated Claude pane or automatic host-turn wake-up. Keep waiting until delegated work is reviewed and handled.
+- This plugin reports completion through tool results and publishes live snapshots for its read-only companion tmux dashboard (`bin/conductor`). The dashboard does not wake or steer Codex. Keep waiting until delegated work is reviewed and handled.

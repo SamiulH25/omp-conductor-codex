@@ -1,0 +1,5 @@
+#!/usr/bin/env node
+import('../dist/companion.mjs').catch(error => {
+  console.error(`conductor: ${error.message}`)
+  process.exitCode = 1
+})

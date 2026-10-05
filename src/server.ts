@@ -9,7 +9,7 @@ import { createRuntime } from './runtime.js'
 const host = createRuntime(fileURLToPath(new URL('../', import.meta.url)))
 register(host.on)
 await host.start()
-const server = new Server({ name: 'omp-conductor-codex', version: '1.0.0' }, { capabilities: { tools: {} } })
+const server = new Server({ name: 'omp-conductor-codex', version: '1.1.0' }, { capabilities: { tools: {} } })
 const ajv = new Ajv({ strict: false, allErrors: true })
 const validators = new Map(host.tools.map(t => [t.name, ajv.compile(t.inputSchema)]))
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: host.tools }))

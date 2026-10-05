@@ -816,7 +816,17 @@ export const register: Register = on => {
             .set(storeKey, { at: Date.now(), workers: all0.map(record), ledger: await read($, ledgerAtom) })
             .catch(() => undefined)
         }
-
+        await $.panel.publish({
+          cwd, model: currentModel, effort: currentThinking, ledger: await read($, ledgerAtom),
+          workers: all0.map(w => ({
+            id: w.id, title: w.title, agent: w.agent, state: w.state, act: w.act, last: w.last,
+            startedAt: w.startedAt, endedAt: w.endedAt, lastAt: w.lastAt, files: [...w.files],
+            tokens: w.tokensIn + w.tokensOut, cost: w.cost, warnings: [...w.warn], error: w.errors.at(-1),
+            tps: w.state === 'running' ? liveTps(w, Date.now()) ?? w.tps : w.tps,
+            avgTps: w.genMs > 0 ? w.outTokens / (w.genMs / 1000) : undefined,
+            spark: [...w.spark], maxMinutes: w.maxMinutes,
+          })),
+        }).catch(() => undefined)
       },
 
       // Coalesce streamed output into one state save per SYNC_MS.
@@ -1247,12 +1257,13 @@ export const register: Register = on => {
     await $.command.register({ name: 'pi-effort', description: 'Show or change the reasoning effort every Pi worker uses' })
 
     $.clock.every(1000, () => {
-      if (running() > 0) void sync()
+      void sync()
       // An idle worker's process is stopped after a while; pi_send resumes its saved session.
       for (const w of workers.values()) {
         if (w.stop && w.state !== 'running' && w.endedAt && Date.now() - w.endedAt > IDLE_STOP_MS) w.stop()
       }
     })
+    await sync()
     return next(e)
   })
 

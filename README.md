@@ -6,7 +6,7 @@ The projects are maintained separately: **omp-conductor** serves Claude Code; **
 
 ## Install
 
-Requires Node **22.19+**, Git, and [Pi](https://pi.dev) on PATH. The toolbox runner uses Linux `bash`, `timeout` and `flock` (matching the upstream Linux workflow).
+Requires Node **22.19+**, Git, and [Pi](https://pi.dev) on PATH. The optional companion launcher also requires **tmux** and a current Codex CLI with `--no-daemon`. The toolbox runner uses Linux `bash`, `timeout` and `flock` (matching the upstream Linux workflow).
 
 Install the prebuilt plugin directly from GitHub:
 
@@ -39,6 +39,36 @@ Pi workers use OpenCode Go by default. Export `OPENCODE_GO_API_KEY` in the envir
 
 The server creates its worker settings, model definition and session directories on first use. `OMP_CONDUCTOR_DATA_DIR` overrides the data directory. Its startup check probes Pi and credentials without making an inference request.
 
+## Companion split
+
+Launch Codex with the live dashboard beside it:
+
+```bash
+./bin/conductor -- -C /path/to/your/project
+```
+
+From an installed GitHub plugin, use the bundled launcher:
+
+```bash
+~/.codex/plugins/cache/omp-conductor-codex/omp-conductor-codex/1.1.0/bin/conductor -- -C /path/to/your/project
+```
+
+No build is needed. If tmux is missing, install it first (`sudo apt install tmux` on Ubuntu/Debian). The launcher creates a tmux session, or adds a sidebar to the current pane when already inside tmux. Codex receives any arguments after `--`. It uses `--no-daemon` so the MCP server inherits the panel ID and data directory even if another Codex daemon is already running.
+
+Use **Ctrl-b then Left/Right** to switch panes with default tmux bindings. Press **q** in the dashboard to close that pane; **j/k** or Up/Down scroll its cards. The sidebar also closes when Codex exits. **Ctrl-b then d** detaches a newly created session; the launcher prints an attach command when used with `launch --detach --`.
+
+The dashboard shows animated worker faces and spinners, states, activity, files touched, elapsed time, a time-budget bar, token rates and sparklines, cost, errors and verification warnings. Flat-rate usage is labeled `plan`. Snapshots are refreshed without model calls, are scoped to each launch, and stay private under the worker data directory. If the server stops updating, active workers are shown as interrupted rather than as live work.
+
+Preview the UI or inspect existing snapshots:
+
+```bash
+./bin/conductor dashboard --demo
+./bin/conductor dashboard --once
+./bin/conductor dashboard --data-dir /path/to/worker-data
+```
+
+A standalone dashboard shows recent sessions across launch groups. The split launcher selects only its own group. The plugin installed in Codex must be **v1.1.0 or newer** to publish dashboard snapshots; update it using the commands below and start a new session. The launcher can also be run directly from the extracted release ZIP.
+
 ## Use
 
 Ask Codex: “Use Pi Conductor to split this implementation into independent worker tasks, review their changes, and merge the accepted work.” The bundled `orchestrate-pi` skill covers briefing, checks and the review loop.
@@ -62,17 +92,18 @@ Merges refuse tracked changes in the main checkout, abort main-checkout conflict
 
 State is stored separately from the Claude version in the Codex data directory. With `CODEX_THREAD_ID`, a restart reloads that thread's worker records and Pi session IDs. Without it, each MCP process uses a fresh UUID so separate clients do not share workers. An interrupted worker can resume through `pi_send` when its saved Pi session is available. Model, effort, dictionaries and toolboxes persist across sessions.
 
-The Claude animated pane and automatic prompt wake-ups are replaced by `pi_status` and bounded `pi_wait`. No unsupported Codex UI hooks are installed. Follow-up tool calls are required to observe worker completion.
+The Claude embedded pane is replaced by the companion tmux dashboard; Codex still uses `pi_status` and bounded `pi_wait` to review workers. No unsupported Codex UI hooks are installed. The dashboard is read-only: worker corrections, merging and cleanup remain MCP operations inside Codex.
 
 ## Development and validation
 
 ```bash
 npm ci --ignore-scripts
 npm test
+npm run dashboard -- --demo
 npm run package  # clean ZIP under artifacts/, with no node_modules or development files
 ```
 
-Tests use a local fake Pi executable and real Git repositories. They cover isolated edits, recall, reviewed new-file diffs, merge/cleanup, concurrent limits, crashes, verification failures, merge conflicts, and MCP initialization/input validation. They do not spend model credits. `npm run build` type-checks TypeScript and bundles the server with esbuild.
+Tests use a local fake Pi executable and real Git repositories. They cover isolated edits, recall, reviewed new-file diffs, merge/cleanup, concurrent limits, crashes, verification failures, merge conflicts, and MCP initialization/input validation. They also check live snapshot updates, session isolation, stale-server indicators, terminal escape sanitization, and real tmux splits both outside and inside an existing session. They do not spend model credits. `npm run build` type-checks TypeScript and bundles the server with esbuild.
 
 The host-independent worker engine and Pi guard/toolbox are adapted from upstream commit `8bca6ad` under the included MIT license. Codex packaging follows [OpenAI's plugin documentation](https://developers.openai.com/plugins/build/plugins).
 

@@ -16980,6 +16980,9 @@ function createRuntime(root, options = {}) {
   const dataDir = resolve(options.dataDir ?? process.env.OMP_CONDUCTOR_DATA_DIR ?? join(home, ".codex", "plugin-data", "omp-conductor-codex"));
   const requestedSessionId = options.sessionId ?? process.env.CODEX_THREAD_ID ?? randomUUID();
   const sessionId = /^[a-zA-Z0-9_-]{1,100}$/.test(requestedSessionId) ? requestedSessionId : createHash("sha256").update(requestedSessionId).digest("hex");
+  const requestedPanelId = options.panelId ?? process.env.OMP_CONDUCTOR_PANEL_ID ?? "standalone";
+  const panelId = /^[a-zA-Z0-9_-]{1,100}$/.test(requestedPanelId) ? requestedPanelId : createHash("sha256").update(requestedPanelId).digest("hex");
+  let panelClosed = false;
   const handlers = /* @__PURE__ */ new Map();
   const tools = [];
   const timers = /* @__PURE__ */ new Set();
@@ -17026,6 +17029,22 @@ function createRuntime(root, options = {}) {
     return child;
   };
   const runtime = {
+    panel: {
+      async publish(body) {
+        const snapshot = { ...body, version: 1, sessionId, panelId, pid: process.pid, at: Date.now(), closed: panelClosed };
+        const serialized = JSON.stringify(snapshot);
+        const run = writeChain.then(async () => {
+          const directory = join(dataDir, "panels", panelId);
+          await mkdir(directory, { recursive: true, mode: 448 });
+          const path = join(directory, sessionId + ".json"), temp = path + "." + randomUUID() + ".tmp";
+          await writeFile(temp, serialized, { mode: 384 });
+          await rename(temp, path);
+        });
+        writeChain = run.catch(() => {
+        });
+        await run;
+      }
+    },
     home,
     dataDir,
     plugin: { root },
@@ -17176,6 +17195,7 @@ function createRuntime(root, options = {}) {
       return invoke();
     },
     async close() {
+      panelClosed = true;
       for (const t of timers) {
         clearTimeout(t);
         clearInterval(t);
@@ -17807,6 +17827,32 @@ ${body}` : "";
           lastSig = sig;
           await $.store.set(storeKey, { at: Date.now(), workers: all0.map(record2), ledger: await read($, ledgerAtom) }).catch(() => void 0);
         }
+        await $.panel.publish({
+          cwd,
+          model: currentModel,
+          effort: currentThinking,
+          ledger: await read($, ledgerAtom),
+          workers: all0.map((w) => ({
+            id: w.id,
+            title: w.title,
+            agent: w.agent,
+            state: w.state,
+            act: w.act,
+            last: w.last,
+            startedAt: w.startedAt,
+            endedAt: w.endedAt,
+            lastAt: w.lastAt,
+            files: [...w.files],
+            tokens: w.tokensIn + w.tokensOut,
+            cost: w.cost,
+            warnings: [...w.warn],
+            error: w.errors.at(-1),
+            tps: w.state === "running" ? liveTps(w, Date.now()) ?? w.tps : w.tps,
+            avgTps: w.genMs > 0 ? w.outTokens / (w.genMs / 1e3) : void 0,
+            spark: [...w.spark],
+            maxMinutes: w.maxMinutes
+          }))
+        }).catch(() => void 0);
       },
       // Coalesce streamed output into one state save per SYNC_MS.
       syncSoon: () => {
@@ -18235,11 +18281,12 @@ ${req.length ? `REQUIRED for this task: ${req.map((n) => `\`check ${n}\``).join(
     await $.command.register({ name: "pi-model", description: "Show or change the model every Pi worker uses" });
     await $.command.register({ name: "pi-effort", description: "Show or change the reasoning effort every Pi worker uses" });
     $.clock.every(1e3, () => {
-      if (running() > 0) void sync();
+      void sync();
       for (const w of workers.values()) {
         if (w.stop && w.state !== "running" && w.endedAt && Date.now() - w.endedAt > IDLE_STOP_MS) w.stop();
       }
     });
+    await sync();
     return next(e);
   });
   on("session.end", async (_$, e, next) => {
@@ -18712,7 +18759,7 @@ ${stat2?.stdout.trim() ?? ""}`);
 var host = createRuntime(fileURLToPath(new URL("../", import.meta.url)));
 register(host.on);
 await host.start();
-var server = new Server({ name: "omp-conductor-codex", version: "1.0.0" }, { capabilities: { tools: {} } });
+var server = new Server({ name: "omp-conductor-codex", version: "1.1.0" }, { capabilities: { tools: {} } });
 var ajv = new import_ajv2.Ajv({ strict: false, allErrors: true });
 var validators = new Map(host.tools.map((t) => [t.name, ajv.compile(t.inputSchema)]));
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: host.tools }));

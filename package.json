@@ -1,6 +1,6 @@
 {
   "name": "omp-conductor-codex",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -10,7 +10,9 @@
     "build": "tsc --noEmit && node scripts/build.mjs",
     "test": "npm run build && node --test tests/*.test.mjs",
     "start": "node dist/server.mjs",
-    "package": "npm run build && python3 scripts/package.py"
+    "package": "npm run build && python3 scripts/package.py",
+    "dashboard": "node dist/companion.mjs dashboard",
+    "conductor": "node dist/companion.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
@@ -20,5 +22,8 @@
     "@types/node": "^22.0.0",
     "esbuild": "^0.25.0",
     "typescript": "^5.0.0"
+  },
+  "bin": {
+    "conductor": "bin/conductor"
   }
 }

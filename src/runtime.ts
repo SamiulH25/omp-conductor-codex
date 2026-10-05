@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile, rename, stat, realpath, readdir, unlink } f
 import { dirname, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
 import { createHash, randomUUID } from 'node:crypto'
+import type { PanelSnapshot } from './panel.js'
 
 export type Register = (on: (...args: any[]) => void) => void
 export const atom = <T>(_key: unknown, initial: T) => ({ value: structuredClone(initial) })
@@ -16,11 +17,14 @@ function terminate(child: ReturnType<typeof spawnChild>) {
   timer.unref()
 }
 
-export function createRuntime(root: string, options: { dataDir?: string; sessionId?: string; cwd?: string } = {}) {
+export function createRuntime(root: string, options: { dataDir?: string; sessionId?: string; cwd?: string; panelId?: string } = {}) {
   const home = homedir()
   const dataDir = resolve(options.dataDir ?? process.env.OMP_CONDUCTOR_DATA_DIR ?? join(home, '.codex', 'plugin-data', 'omp-conductor-codex'))
   const requestedSessionId = options.sessionId ?? process.env.CODEX_THREAD_ID ?? randomUUID()
   const sessionId = /^[a-zA-Z0-9_-]{1,100}$/.test(requestedSessionId) ? requestedSessionId : createHash('sha256').update(requestedSessionId).digest('hex')
+  const requestedPanelId = options.panelId ?? process.env.OMP_CONDUCTOR_PANEL_ID ?? 'standalone'
+  const panelId = /^[a-zA-Z0-9_-]{1,100}$/.test(requestedPanelId) ? requestedPanelId : createHash('sha256').update(requestedPanelId).digest('hex')
+  let panelClosed = false
   const handlers = new Map<string, (...args: any[]) => Promise<any>>()
   const tools: any[] = []
   const timers = new Set<ReturnType<typeof setTimeout>>()
@@ -43,6 +47,19 @@ export function createRuntime(root: string, options: { dataDir?: string; session
   }
   const track = (child: ReturnType<typeof spawnChild>) => { children.add(child); child.once('close', () => children.delete(child)); return child }
   const runtime = {
+    panel: {
+      async publish(body: Omit<PanelSnapshot, 'version' | 'sessionId' | 'panelId' | 'pid' | 'at' | 'closed'>) {
+        const snapshot: PanelSnapshot = { ...body, version: 1, sessionId, panelId, pid: process.pid, at: Date.now(), closed: panelClosed }
+        const serialized = JSON.stringify(snapshot)
+        const run = writeChain.then(async () => {
+          const directory = join(dataDir, 'panels', panelId)
+          await mkdir(directory, { recursive: true, mode: 0o700 })
+          const path = join(directory, sessionId + '.json'), temp = path + '.' + randomUUID() + '.tmp'
+          await writeFile(temp, serialized, { mode: 0o600 }); await rename(temp, path)
+        })
+        writeChain = run.catch(() => {}); await run
+      },
+    },
     home, dataDir, plugin: { root }, session: { id: async () => sessionId }, store,
     fs: {
       read: (path: string) => readFile(path, 'utf8'),
@@ -112,6 +129,7 @@ export function createRuntime(root: string, options: { dataDir?: string; session
       return invoke()
     },
     async close() {
+      panelClosed = true
       for (const t of timers) { clearTimeout(t); clearInterval(t) }; timers.clear()
       await handlers.get('session.end')?.(runtime, {}, next)
       for (const child of children) terminate(child)

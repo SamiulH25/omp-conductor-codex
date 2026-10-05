@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { resolve, join } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { createRuntime } from '../dist/test/runtime.mjs'
+import { readPanels } from '../dist/test/panel.mjs'
 import { register } from '../dist/test/conductor.mjs'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
@@ -20,7 +21,7 @@ before(async () => {
   await writeFile(join(repo, 'base.txt'), 'base\n'); git('add', '.'); git('commit', '-m', 'initial')
   const bin = join(fixture, 'bin'); await mkdir(bin); await copyFile(new URL('./fake-pi.mjs', import.meta.url), join(bin, 'pi')); await chmod(join(bin, 'pi'), 0o755)
   oldPath = process.env.PATH; oldKey = process.env.OPENCODE_GO_API_KEY; process.env.PATH = bin + ':' + oldPath; process.env.OPENCODE_GO_API_KEY = 'fixture-only'
-  host = createRuntime(resolve('.'), { dataDir: join(fixture, 'data'), sessionId: 'test-session', cwd: repo }); register(host.on); await host.start()
+  host = createRuntime(resolve('.'), { dataDir: join(fixture, 'data'), sessionId: 'test-session', panelId: 'integration-panel', cwd: repo }); register(host.on); await host.start()
   const r = await call('pi_dict', { action: 'set', dir: repo, entries: [{ term: 'layout', definition: 'base.txt is the fixture file.' }] }); assert.ok(r.result, r.deny)
 })
 after(async () => { await host?.close(); process.env.PATH = oldPath; if (oldKey === undefined) delete process.env.OPENCODE_GO_API_KEY; else process.env.OPENCODE_GO_API_KEY = oldKey; await rm(fixture, { recursive: true, force: true }) })
@@ -70,7 +71,7 @@ test('saved worker and settings recover after a server restart', async () => {
   const id = await spawn('WRITE restored.txt saved'); await wait(id)
   await call('pi_effort', { value: 'medium' })
   await host.close()
-  host = createRuntime(resolve('.'), { dataDir: join(fixture, 'data'), sessionId: 'test-session', cwd: repo }); register(host.on); await host.start()
+  host = createRuntime(resolve('.'), { dataDir: join(fixture, 'data'), sessionId: 'test-session', panelId: 'integration-panel', cwd: repo }); register(host.on); await host.start()
   assert.match((await call('pi_digest', { id })).result, /fixture completed/)
   assert.match((await call('pi_effort')).text, /medium/)
   assert.match((await call('pi_send', { id, message: 'WRITE restored.txt resumed' })).result, /resuming/)
@@ -85,4 +86,21 @@ test('toolbox preserves literal arguments and records a passing check', async ()
   const out = execFileSync(process.execPath, [resolve('bin/check'), 'literal', literal], { encoding: 'utf8', env: { ...process.env, PI_CHECKS_FILE: config, TMPDIR: scratch } })
   assert.match(out, /PASS/); assert.equal(await readFile(join(scratch, 'check-literal.log'), 'utf8'), literal + '\n')
   assert.equal(JSON.parse((await readFile(join(scratch, 'checks.jsonl'), 'utf8')).trim()).ok, true)
+})
+
+test('panel publishes live activity even when no step or file count changes', async () => {
+  const id = await spawn('HANG')
+  let snapshots = []
+  for (let i = 0; i < 30; i++) {
+    snapshots = await readPanels(join(fixture, 'data'), 'integration-panel')
+    if (snapshots[0]?.workers.find(w => w.id === id)?.last.includes('read base.txt')) break
+    await new Promise(r => setTimeout(r, 50))
+  }
+  const snapshot = snapshots[0], worker = snapshot.workers.find(w => w.id === id)
+  assert.match(worker.last, /read base.txt/); assert.equal(worker.state, 'running')
+  assert.equal(snapshot.panelId, 'integration-panel')
+  assert.equal(JSON.stringify(snapshot).includes('fixture-only'), false)
+  assert.equal('task' in worker, false)
+  assert.deepEqual(await readPanels(join(fixture, 'data'), 'other-panel'), [])
+  await call('pi_kill', { id }); await call('pi_cleanup', { id })
 })

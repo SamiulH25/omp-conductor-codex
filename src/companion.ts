@@ -3,14 +3,14 @@ import { randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { demoSnapshot, readPanels, renderPanel } from './panel.js'
+import { demoSnapshot, fit, readPanels, renderPanel } from './panel.js'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
 const help = `Pi Conductor companion\n\n  conductor [launch] [--detach] -- [codex arguments]\n  conductor dashboard [--once] [--demo] [--panel ID] [--data-dir PATH]\n\nExamples:\n  ./bin/conductor -- -C ~/my-project\n  ./bin/conductor dashboard --demo\n\nRequires tmux for launch. Ctrl-b then left/right changes panes; q closes the panel.\nThe launcher uses codex --no-daemon to pass panel identity to its MCP server.\nDashboard reads local snapshots and never calls a model.\n`
 const quote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`
 function tmux(args: string[], allowFailure = false) {
   const r = spawnSync('tmux', args, { encoding: 'utf8' })
-  if ((r.error || r.status !== 0) && !allowFailure) throw new Error((r.error as NodeJS.ErrnoException)?.code === 'ENOENT' ? 'tmux is not installed. Install tmux, then run conductor again.' : r.stderr.trim() || String(r.error ?? 'tmux failed'))
+  if ((r.error || r.status !== 0) && !allowFailure) throw new Error((r.error as NodeJS.ErrnoException)?.code === 'ENOENT' ? 'tmux is not installed. Install tmux, then run conductor again.' : `${args[0]}: ${r.stderr.trim() || String(r.error ?? 'tmux failed')}`)
   return r.stdout?.trim() ?? ''
 }
 function value(args: string[], name: string) { const i = args.indexOf(name); if (i < 0) return undefined; if (!args[i + 1] || args[i + 1].startsWith('--')) throw new Error(`${name} requires a value`); return args[i + 1] }
@@ -33,7 +33,10 @@ async function dashboard(args: string[]) {
       const height = Math.max(1, (process.stdout.rows ?? 30) - 1)
       offset = Math.min(offset, Math.max(0, rows.length - height))
       if (once) { process.stdout.write(rows.join('\n') + '\n'); break }
-      process.stdout.write('\x1b[H\x1b[2J' + rows.slice(offset, offset + height).join('\r\n'))
+      const visible = rows.slice(offset, offset + Math.max(1, height - 1))
+      while (visible.length < height - 1) visible.push('')
+      visible.push(fit(`q close | j/k scroll${offset ? ` (${offset + 1}/${rows.length})` : ''}`, process.stdout.columns ?? 48))
+      process.stdout.write('\x1b[H\x1b[2J' + visible.join('\r\n'))
       if (watchPane && frame % 4 === 0 && !tmux(['list-panes', '-a', '-F', '#{pane_id}'], true).split('\n').includes(watchPane)) break
       await new Promise(r => setTimeout(r, 250))
     } while (!stopped)
@@ -54,7 +57,7 @@ async function launch(args: string[]) {
   const panelCommand = (pane: string) => [process.execPath, join(root, 'dist/companion.mjs'), 'dashboard', '--panel', panelId, '--data-dir', dataDir, '--watch-pane', pane].map(quote).join(' ')
   if (process.env.TMUX && !detached) {
     const main = tmux(['display-message', '-p', '#{pane_id}'])
-    const side = tmux(['split-window', '-h', '-p', '35', '-d', '-P', '-F', '#{pane_id}', '-t', main, '-c', process.cwd(), panelCommand(main)])
+    const side = tmux(['split-window', '-h', '-l', '35%', '-d', '-P', '-F', '#{pane_id}', '-t', main, '-c', process.cwd(), panelCommand(main)])
     tmux(['set-option', '-p', '-t', side, 'remain-on-exit', 'off'])
     try {
       const child = spawn(codex, ['--no-daemon', ...codexArgs], { stdio: 'inherit', env })
@@ -71,7 +74,7 @@ async function launch(args: string[]) {
   try {
     const main = tmux(['new-session', '-d', '-P', '-F', '#{pane_id}', '-s', session, '-n', 'Codex + Conductor', '-x', String(process.stdout.columns ?? 140), '-y', String(process.stdout.rows ?? 40), '-c', process.cwd(), codexCommand]); created = true
     tmux(['set-option', '-w', '-t', session, 'remain-on-exit', 'off'])
-    tmux(['split-window', '-h', '-p', '35', '-d', '-t', main, '-c', process.cwd(), panelCommand(main)])
+    tmux(['split-window', '-h', '-l', '35%', '-d', '-t', main, '-c', process.cwd(), panelCommand(main)])
     tmux(['select-pane', '-t', main])
     if (detached) { console.log(`Started ${session}\nAttach: tmux attach -t ${session}`); return }
     const attached = spawnSync('tmux', ['attach-session', '-t', session], { stdio: 'inherit' })
